@@ -1416,8 +1416,10 @@ function attachGatewayAuthHeader(req) {
   }
 }
 
-proxy.on("proxyReqWs", (_proxyReq, req) => {
-  attachGatewayAuthHeader(req);
+proxy.on("proxyReqWs", (_proxyReq, _req) => {
+  if (OPENCLAW_GATEWAY_TOKEN) {
+    _proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
+  }
 });
 
 app.use(requireDashboardAuth, async (req, res) => {
