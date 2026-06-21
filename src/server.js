@@ -70,6 +70,46 @@ function resolveGatewayToken() {
 const OPENCLAW_GATEWAY_TOKEN = resolveGatewayToken();
 process.env.OPENCLAW_GATEWAY_TOKEN = OPENCLAW_GATEWAY_TOKEN;
 
+// Sync the resolved gateway token directly into the OpenClaw config file.
+// This runs before the gateway starts so the gateway always reads the correct
+// token from its own config, preventing "token_missing" auth errors.
+// Direct file I/O is used instead of the CLI to avoid a chicken-and-egg
+// dependency on the gateway/CLI being available at this point in startup.
+function syncGatewayTokenToConfig() {
+  if (!OPENCLAW_GATEWAY_TOKEN) return;
+
+  const cfgPath = process.env.OPENCLAW_CONFIG_PATH?.trim() || path.join(STATE_DIR, "openclaw.json");
+
+  try {
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  } catch {
+    // best-effort
+  }
+
+  let cfg = {};
+  try {
+    const raw = fs.readFileSync(cfgPath, "utf8").trim();
+    if (raw) cfg = JSON.parse(raw);
+  } catch {
+    // Config doesn't exist yet or is not valid JSON — start with a minimal object.
+  }
+
+  // Deep-set gateway.auth.token, gateway.auth.mode, and gateway.remote.token.
+  if (!cfg.gateway || typeof cfg.gateway !== "object") cfg.gateway = {};
+  if (!cfg.gateway.auth || typeof cfg.gateway.auth !== "object") cfg.gateway.auth = {};
+  if (!cfg.gateway.remote || typeof cfg.gateway.remote !== "object") cfg.gateway.remote = {};
+
+  cfg.gateway.auth.mode = "token";
+  cfg.gateway.auth.token = OPENCLAW_GATEWAY_TOKEN;
+  cfg.gateway.remote.token = OPENCLAW_GATEWAY_TOKEN;
+
+  try {
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    console.warn(`[wrapper] failed to write gateway token to config: ${String(err)}`);
+  }
+}
+
 // Where the gateway will listen internally (we proxy to it).
 const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT ?? "18789", 10);
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
@@ -1431,19 +1471,16 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
     }
   }
 
-  // Sync gateway tokens in config with the current env var on every startup.
-  // This prevents "gateway token mismatch" when OPENCLAW_GATEWAY_TOKEN changes
-  // (e.g. Railway variable update) but the config file still has the old value.
-  if (isConfigured() && OPENCLAW_GATEWAY_TOKEN) {
+  // Sync gateway token directly into the config file before the gateway starts.
+  // This is the primary sync path: it writes gateway.auth.token into openclaw.json
+  // via direct file I/O so the gateway reads the correct token on first boot,
+  // preventing "token_missing" auth errors even when the CLI is not yet available.
+  // Runs unconditionally (creates a minimal config if none exists yet, and also
+  // handles the case where OPENCLAW_GATEWAY_TOKEN rotated since the last deploy).
+  if (OPENCLAW_GATEWAY_TOKEN) {
     console.log("[wrapper] syncing gateway tokens in config...");
-    try {
-      await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.mode", "token"]));
-      await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
-      await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.remote.token", OPENCLAW_GATEWAY_TOKEN]));
-      console.log("[wrapper] gateway tokens synced");
-    } catch (err) {
-      console.warn(`[wrapper] failed to sync gateway tokens: ${String(err)}`);
-    }
+    syncGatewayTokenToConfig();
+    console.log("[wrapper] gateway tokens synced");
   }
 
   // Auto-start the gateway if already configured so polling channels (Telegram/Discord/etc.)
