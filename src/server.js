@@ -635,6 +635,21 @@ app.get("/setup/api/auth-groups", requireSetupAuth, (_req, res) => {
   res.json({ ok: true, authGroups: AUTH_GROUPS });
 });
 
+// Expose the gateway token so the Control UI can authenticate its WebSocket connection.
+// The token is already injected by the proxy layer for HTTP requests, but the browser
+// Control UI needs the raw token to include in its own WebSocket handshake.
+// Protected by requireSetupAuth (SETUP_PASSWORD Basic auth when set) so the token is
+// only reachable by authenticated operators — same protection as all other /setup/api/* routes.
+app.get("/setup/api/gateway-token", requireSetupAuth, (_req, res) => {
+  if (!OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(503).json({ ok: false, error: "Gateway token not available" });
+  }
+  // Set Cache-Control: no-store so the token is never cached by the browser or any
+  // intermediate proxy, reducing the risk of inadvertent token leakage.
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, token: OPENCLAW_GATEWAY_TOKEN });
+});
+
 function buildOnboardArgs(payload) {
   const args = [
     "onboard",
